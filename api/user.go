@@ -1,0 +1,63 @@
+package api
+
+import (
+	"net/http"
+	"time"
+
+	"github.com/gin-gonic/gin"
+	db "github.com/kevinbarrero/auth-service/db/sqlc"
+	"github.com/kevinbarrero/auth-service/util"
+	"github.com/lib/pq"
+)
+
+type createUserRequest struct {
+	Email    string `json:"email" binding:"required,email"`
+	FullName string `json:"full_name" binding:"required"`
+	Password string `json:"password" binding:"required,min=6"`
+}
+
+type userResponse struct {
+	Email             string    `json:"email"`
+	FullName          string    `json:"full_name"`
+	PasswordChangedAt time.Time `json:"password_changed_at"`
+}
+
+func newUserResponse(user db.Users) userResponse {
+	return userResponse{
+		Email:             user.Email,
+		FullName:          user.FullName,
+		PasswordChangedAt: user.PasswordChangedAt,
+	}
+}
+
+func (server *Server) createUser(ctx *gin.Context) {
+	var req createUserRequest
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		ctx.JSON(http.StatusBadRequest, errorResponse(err))
+		return
+	}
+	hashedPassword, err := util.HashPassword(req.Password)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, errorResponse(err))
+		return
+	}
+	arg := db.CreateUserParams{
+		Email:          req.Email,
+		FullName:       req.FullName,
+		HashedPassword: hashedPassword,
+	}
+	user, err := server.store.CreateUser(ctx, arg)
+	if err != nil {
+		if pqErr, ok := err.(*pq.Error); ok {
+			switch pqErr.Code.Name() {
+			case "unique_violation":
+				ctx.JSON(http.StatusForbidden, errorResponse(err))
+				return
+			}
+		}
+		ctx.JSON(http.StatusInternalServerError, errorResponse(err))
+		return
+	}
+	rsp := newUserResponse(user)
+	ctx.JSON(http.StatusOK, rsp)
+}
